@@ -1,0 +1,147 @@
+// =============================================================================
+// sage16_4x4_mac.v  — 4x4 fabric with paired per-PE SRAM   (sage16_mem v2)
+//
+// Each PE (16 total) is paired with one 256x32 1RW SRAM macro.  The fabric
+// exposes flat per-PE SRAM control buses driven from outside (BIST or a
+// future kernel-with-memory controller).  SRAM write source is the PE's
+// own accumulator output `out` (the only thing worth storing).
+//
+// Flat per-PE SRAM control buses (PE index = r*COLS + c, 0..15):
+//   sram_cs_n_flat   [16]                       — chip-select per PE  (active low)
+//   sram_we_n_flat   [16]                       — write-enable per PE (active low)
+//   sram_addr_flat   [16 * SRAM_AW]             — addr per PE
+//   sram_wdata_sel   [16]                       — wdata source per PE:
+//                                                   0 = use PE accumulator `out`
+//                                                   1 = use sram_wdata_ext_flat
+//   sram_wdata_ext_flat [16 * 32]               — external wdata per PE (BIST)
+//   sel_src_a_flat   [16]                       — PE op-A source: 0=broadcast, 1=SRAM
+//   sel_src_b_flat   [16]                       — PE op-B source: 0=broadcast, 1=SRAM
+//
+// Backward compatibility:
+//   Driving all sram_cs_n_flat = 1 and sel_src_*_flat = 0 puts the fabric
+//   into "SRAM disabled" mode, identical to the original sage16_4x4_mac
+//   behaviour.  v1 kernel controllers do this and pass the same 1616
+//   regression checks.
+// =============================================================================
+`default_nettype none
+
+module sage16_4x4_mac #(
+    parameter ROWS     = 4,
+    parameter COLS     = 4,
+    parameter DATA_W   = 16,
+    parameter ACC_W    = 32,
+    parameter CFG_W    = 10,
+    parameter PIPELINE = 1,
+    parameter SRAM_AW  = 8,            // 256 words
+    parameter SRAM_DW  = 32
+)(
+    input  wire                             clk, rst_n,
+    input  wire [$clog2(ROWS)-1:0]          cfg_pe_row,
+    input  wire [$clog2(COLS)-1:0]          cfg_pe_col,
+    input  wire [CFG_W-1:0]                 cfg_data,
+    input  wire                             cfg_load,
+    input  wire                             cfg_broadcast,
+    input  wire                             clr_acc_all,
+    input  wire                             out_en_all,
+    input  wire [ROWS*DATA_W-1:0]           ext_in_west,
+    input  wire [COLS*DATA_W-1:0]           ext_in_north,
+    input  wire                             per_pe_bypass_en,
+    input  wire [ROWS*COLS*DATA_W-1:0]      per_pe_bypass_flat,
+    // --- per-PE SRAM control (flat) ---
+    input  wire [ROWS*COLS-1:0]             sram_cs_n_flat,
+    input  wire [ROWS*COLS-1:0]             sram_we_n_flat,
+    input  wire [ROWS*COLS*SRAM_AW-1:0]     sram_addr_flat,
+    input  wire [ROWS*COLS-1:0]             sram_wdata_sel,
+    input  wire [ROWS*COLS*SRAM_DW-1:0]     sram_wdata_ext_flat,
+    input  wire [ROWS*COLS-1:0]             sel_src_a_flat,
+    input  wire [ROWS*COLS-1:0]             sel_src_b_flat,
+    // --- SRAM read data exposed (for verification / observe) ---
+    output wire [ROWS*COLS*SRAM_DW-1:0]     sram_rdata_flat,
+    // --- compute fabric outputs ---
+    output wire [ROWS*ACC_W-1:0]            ext_out_east,
+    output wire [ROWS*COLS*ACC_W-1:0]       all_pe_out
+);
+    wire [ACC_W-1:0]  pe_out_acc  [0:ROWS*COLS-1];
+    wire [DATA_W-1:0] pe_out_mesh [0:ROWS*COLS-1];
+    wire [SRAM_DW-1:0] sram_rdata_w [0:ROWS*COLS-1];
+
+    genvar r, c;
+    generate for (r = 0; r < ROWS; r = r+1) begin : rg
+        for (c = 0; c < COLS; c = c+1) begin : cg
+            localparam IDX = r*COLS + c;
+
+            // ---- config-load decode ----
+            wire cfl = cfg_broadcast ||
+                       (cfg_load && (cfg_pe_row == r) && (cfg_pe_col == c));
+
+            // ---- mesh neighbours ----
+            wire [DATA_W-1:0] wn, ws, we, ww;
+            if (r == 0)       assign wn = ext_in_north[c*DATA_W +: DATA_W];
+            else              assign wn = pe_out_mesh[(r-1)*COLS + c];
+            if (r == ROWS-1)  assign ws = {DATA_W{1'b0}};
+            else              assign ws = pe_out_mesh[(r+1)*COLS + c];
+            if (c == COLS-1)  assign we = {DATA_W{1'b0}};
+            else              assign we = pe_out_mesh[r*COLS + (c+1)];
+            if (c == 0)       assign ww = ext_in_west[r*DATA_W +: DATA_W];
+            else              assign ww = pe_out_mesh[r*COLS + (c-1)];
+
+            // ---- broadcast operand delivery ----
+            wire [DATA_W-1:0] bypass_bcast = ext_in_west[r*DATA_W +: DATA_W];
+            wire [DATA_W-1:0] bypass_perpe = per_pe_bypass_flat[IDX*DATA_W +: DATA_W];
+            wire [DATA_W-1:0] bypass = per_pe_bypass_en ? bypass_perpe : bypass_bcast;
+            wire [DATA_W-1:0] b_col  = ext_in_north[c*DATA_W +: DATA_W];
+
+            // ---- SRAM write-data mux: PE accumulator OR external value ----
+            wire [SRAM_DW-1:0] sram_wdata_pe  = pe_out_acc[IDX];
+            wire [SRAM_DW-1:0] sram_wdata_ext = sram_wdata_ext_flat[IDX*SRAM_DW +: SRAM_DW];
+            wire [SRAM_DW-1:0] sram_wdata     =
+                sram_wdata_sel[IDX] ? sram_wdata_ext : sram_wdata_pe;
+
+            // ---- paired SRAM ----
+            sram_1rw_256x32 u_mem (
+                .clk   (clk),
+                .cs_n  (sram_cs_n_flat[IDX]),
+                .we_n  (sram_we_n_flat[IDX]),
+                .addr  (sram_addr_flat[IDX*SRAM_AW +: SRAM_AW]),
+                .wdata (sram_wdata),
+                .rdata (sram_rdata_w[IDX])
+            );
+
+            assign sram_rdata_flat[IDX*SRAM_DW +: SRAM_DW] = sram_rdata_w[IDX];
+
+            // ---- PE ----
+            pe #(
+                .DATA_W  (DATA_W),
+                .ACC_W   (ACC_W),
+                .CFG_W   (CFG_W),
+                .PIPELINE(PIPELINE)
+            ) u_pe (
+                .clk        (clk),
+                .rst_n      (rst_n),
+                .cfg_load   (cfl),
+                .cfg_in     (cfg_data),
+                .out_en     (out_en_all),
+                .clr_acc    (clr_acc_all),
+                .in_north   (wn),
+                .in_south   (ws),
+                .in_east    (we),
+                .in_west    (ww),
+                .in_self    (pe_out_acc[IDX]),
+                .in_bypass  (bypass),
+                .in_b_col   (b_col),
+                .sram_rdata (sram_rdata_w[IDX]),
+                .sel_src_a  (sel_src_a_flat[IDX]),
+                .sel_src_b  (sel_src_b_flat[IDX]),
+                .out_mesh   (pe_out_mesh[IDX]),
+                .out        (pe_out_acc [IDX])
+            );
+
+            if (c == COLS-1)
+                assign ext_out_east[r*ACC_W +: ACC_W] = pe_out_acc[IDX];
+
+            assign all_pe_out[IDX*ACC_W +: ACC_W] = pe_out_acc[IDX];
+        end
+    end endgenerate
+endmodule
+
+`default_nettype wire
