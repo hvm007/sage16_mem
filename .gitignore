@@ -1,2 +1,9 @@
-build/*.vvp
-build/*.vcd
+# build artifacts — ignore the whole dir
+build/
+*.vvp
+*.vcd
+*.jou
+*.log
+.Xil/
+__pycache__/
+*.pyc
