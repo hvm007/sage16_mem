@@ -42,6 +42,9 @@ module pe #(
     input  wire [ACC_W-1:0]      sram_rdata,    // from paired SRAM (1-cycle delayed)
     input  wire                  sel_src_a,     // 0 = in_bypass, 1 = sram_rdata[DATA_W-1:0]
     input  wire                  sel_src_b,     // 0 = in_b_col,  1 = sram_rdata[DATA_W-1:0]
+    // --- fault injection (permanent PE-fault model; 0 = healthy) ---
+    input  wire                  fault_en,      // 1 = this PE is faulty
+    input  wire [ACC_W-1:0]      fault_xor,     // bits XOR'd into the result when fault_en
     // --- outputs ---
     output wire [DATA_W-1:0]     out_mesh,
     output reg  [ACC_W-1:0]      out
@@ -140,10 +143,14 @@ module pe #(
     end
 
     // ------------- accumulator register -------------
+    // Permanent-fault model: when fault_en, the PE's stored result is corrupted
+    // by fault_xor every cycle it updates — models a broken MAC/accumulator.
+    wire [ACC_W-1:0] alu_out_fi = fault_en ? (alu_out ^ fault_xor) : alu_out;
+
     always @(posedge clk or negedge rst_n)
         if (!rst_n)       out <= 0;
         else if (clr_acc) out <= 0;
-        else if (out_en)  out <= alu_out;
+        else if (out_en)  out <= alu_out_fi;
 
     assign out_mesh = out[DATA_W-1:0];
 endmodule

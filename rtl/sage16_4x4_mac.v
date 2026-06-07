@@ -55,6 +55,9 @@ module sage16_4x4_mac #(
     input  wire [ROWS*COLS*SRAM_DW-1:0]     sram_wdata_ext_flat,
     input  wire [ROWS*COLS-1:0]             sel_src_a_flat,
     input  wire [ROWS*COLS-1:0]             sel_src_b_flat,
+    // --- fault injection (per-PE enable; shared xor mask). 0 = all healthy ---
+    input  wire [ROWS*COLS-1:0]             fault_en_flat,
+    input  wire [ACC_W-1:0]                 fault_xor,
     // --- SRAM read data exposed (for verification / observe) ---
     output wire [ROWS*COLS*SRAM_DW-1:0]     sram_rdata_flat,
     // --- compute fabric outputs ---
@@ -132,6 +135,8 @@ module sage16_4x4_mac #(
                 .sram_rdata (sram_rdata_w[IDX]),
                 .sel_src_a  (sel_src_a_flat[IDX]),
                 .sel_src_b  (sel_src_b_flat[IDX]),
+                .fault_en   (fault_en_flat[IDX]),
+                .fault_xor  (fault_xor),
                 .out_mesh   (pe_out_mesh[IDX]),
                 .out        (pe_out_acc [IDX])
             );
