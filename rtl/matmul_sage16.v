@@ -60,6 +60,7 @@ module matmul_sage16 #(
         .sram_cs_n_flat      ({16{1'b1}}),     // all chip-selects high = no op
         .sram_we_n_flat      ({16{1'b1}}),
         .sram_addr_flat      (128'b0),         // 16 * 8 = 128
+        .sram_raddr2_flat    (128'b0),
         .sram_wdata_sel      (16'b0),
         .sram_wdata_ext_flat (512'b0),         // 16 * 32 = 512
         .sel_src_a_flat      (16'b0),

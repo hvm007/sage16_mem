@@ -20,9 +20,11 @@ module tb_sram_unit;
     reg  [31:0]  wdata = 0;
     wire [31:0]  rdata;
 
+    wire [31:0] rdata2_unused;
     sram_1rw_256x32 dut (
         .clk(clk), .cs_n(cs_n), .we_n(we_n),
-        .addr(addr), .wdata(wdata), .rdata(rdata)
+        .addr(addr), .wdata(wdata), .rdata(rdata),
+        .raddr2(8'd0), .rdata2(rdata2_unused)   // port B unused in this unit test
     );
 
     integer pass_cnt = 0, fail_cnt = 0;

@@ -111,6 +111,7 @@ module sage16_top #(
         .sram_cs_n_flat      ({16{1'b1}}),
         .sram_we_n_flat      ({16{1'b1}}),
         .sram_addr_flat      (128'b0),
+        .sram_raddr2_flat    (128'b0),
         .sram_wdata_sel      (16'b0),
         .sram_wdata_ext_flat (512'b0),
         .sel_src_a_flat      (16'b0),

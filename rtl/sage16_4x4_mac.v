@@ -55,6 +55,8 @@ module sage16_4x4_mac #(
     input  wire [ROWS*COLS*SRAM_DW-1:0]     sram_wdata_ext_flat,
     input  wire [ROWS*COLS-1:0]             sel_src_a_flat,
     input  wire [ROWS*COLS-1:0]             sel_src_b_flat,
+    // --- SRAM port B: dedicated read addr per PE (for PE operand fetch) ---
+    input  wire [ROWS*COLS*SRAM_AW-1:0]     sram_raddr2_flat,
     // --- fault injection (per-PE enable; shared xor mask). 0 = all healthy ---
     input  wire [ROWS*COLS-1:0]             fault_en_flat,
     input  wire [ACC_W-1:0]                 fault_xor,
@@ -66,7 +68,8 @@ module sage16_4x4_mac #(
 );
     wire [ACC_W-1:0]  pe_out_acc  [0:ROWS*COLS-1];
     wire [DATA_W-1:0] pe_out_mesh [0:ROWS*COLS-1];
-    wire [SRAM_DW-1:0] sram_rdata_w [0:ROWS*COLS-1];
+    wire [SRAM_DW-1:0] sram_rdata_w  [0:ROWS*COLS-1];  // port A read (BIST/verify)
+    wire [SRAM_DW-1:0] sram_rdata2_w [0:ROWS*COLS-1];  // port B read (PE operand)
 
     genvar r, c;
     generate for (r = 0; r < ROWS; r = r+1) begin : rg
@@ -103,11 +106,15 @@ module sage16_4x4_mac #(
             // ---- paired SRAM ----
             sram_1rw_256x32 u_mem (
                 .clk   (clk),
+                // port A: read/write (BIST, write-back, verify)
                 .cs_n  (sram_cs_n_flat[IDX]),
                 .we_n  (sram_we_n_flat[IDX]),
                 .addr  (sram_addr_flat[IDX*SRAM_AW +: SRAM_AW]),
                 .wdata (sram_wdata),
-                .rdata (sram_rdata_w[IDX])
+                .rdata (sram_rdata_w[IDX]),
+                // port B: dedicated read (PE operand fetch) — concurrent with A
+                .raddr2(sram_raddr2_flat[IDX*SRAM_AW +: SRAM_AW]),
+                .rdata2(sram_rdata2_w[IDX])
             );
 
             assign sram_rdata_flat[IDX*SRAM_DW +: SRAM_DW] = sram_rdata_w[IDX];
@@ -132,7 +139,7 @@ module sage16_4x4_mac #(
                 .in_self    (pe_out_acc[IDX]),
                 .in_bypass  (bypass),
                 .in_b_col   (b_col),
-                .sram_rdata (sram_rdata_w[IDX]),
+                .sram_rdata (sram_rdata2_w[IDX]),   // PE reads via port B
                 .sel_src_a  (sel_src_a_flat[IDX]),
                 .sel_src_b  (sel_src_b_flat[IDX]),
                 .fault_en   (fault_en_flat[IDX]),

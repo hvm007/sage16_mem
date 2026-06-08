@@ -40,6 +40,7 @@ module tb_pe_sram;
     reg [NUM_PE-1:0]                sram_cs_n    = {NUM_PE{1'b1}};
     reg [NUM_PE-1:0]                sram_we_n    = {NUM_PE{1'b1}};
     reg [NUM_PE*SRAM_AW-1:0]        sram_addr    = 0;
+    reg [NUM_PE*SRAM_AW-1:0]        sram_raddr2  = 0;   // port B read addr
     reg [NUM_PE-1:0]                sram_wdata_sel = 0;
     reg [NUM_PE*SRAM_DW-1:0]        sram_wdata_ext = 0;
     reg [NUM_PE-1:0]                sel_src_a    = 0;
@@ -65,6 +66,7 @@ module tb_pe_sram;
         .sram_wdata_ext_flat(sram_wdata_ext),
         .sel_src_a_flat(sel_src_a),
         .sel_src_b_flat(sel_src_b),
+        .sram_raddr2_flat(sram_raddr2),
         .fault_en_flat(16'b0),
         .fault_xor(32'b0),
         .sram_rdata_flat(sram_rdata),
@@ -124,14 +126,11 @@ module tb_pe_sram;
         #1; check(pe00_sram_rd, 32'd7, 1);
 
         // ---------- T2: SRAM[0] → operand A, multiply by in_b_col=3 ----------
-        $display("\n--- T2: SRAM[0] → mul_a, in_b_col=3 → expect 21 ---");
-        // Cycle 1: issue read of SRAM[0]
-        sram_cs_n[0]                          = 1'b0;
-        sram_we_n[0]                          = 1'b1;
-        sram_addr[0*SRAM_AW +: SRAM_AW]       = 8'd0;
+        $display("\n--- T2: SRAM[0] -> mul_a (port B), in_b_col=3 -> expect 21 ---");
+        // Cycle 1: issue read of SRAM[0] on the dedicated read port (port B)
+        sram_raddr2[0*SRAM_AW +: SRAM_AW]     = 8'd0;
         @(negedge clk);
-        sram_cs_n[0] = 1'b1;
-        // Cycle 2: sram_rdata valid; assert sel_src_a, drive in_b_col, latch MAC
+        // Cycle 2: rdata2 (port B) valid; assert sel_src_a, drive in_b_col, latch MAC
         sel_src_a[0]                          = 1'b1;
         ext_in_north[0*DATA_W +: DATA_W]      = 16'd3;    // B-broadcast col 0
         out_en_all                            = 1'b1;

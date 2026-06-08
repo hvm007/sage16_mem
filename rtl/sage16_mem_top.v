@@ -138,6 +138,7 @@ module sage16_mem_top #(
         .sram_cs_n_flat     (mux_cs_n),
         .sram_we_n_flat     (mux_we_n),
         .sram_addr_flat     (mux_addr),
+        .sram_raddr2_flat   (128'b0),
         .sram_wdata_sel     (mux_wdata_sel),
         .sram_wdata_ext_flat(mux_wdata_ext),
         .sel_src_a_flat     (mux_sel_src_a),
