@@ -60,12 +60,52 @@ module sage16_4x4_mac #(
     // --- fault injection (per-PE enable; shared xor mask). 0 = all healthy ---
     input  wire [ROWS*COLS-1:0]             fault_en_flat,
     input  wire [ACC_W-1:0]                 fault_xor,
+    // --- rail fault injection (broadcast-wire defect model). 0 = healthy ---
+    // Corrupts the named rail AFTER the source residue is computed, i.e. a
+    // defect on the wire/repeater between driver and taps.
+    input  wire [ROWS-1:0]                  rail_fault_w_en,
+    input  wire [COLS-1:0]                  rail_fault_n_en,
+    input  wire [DATA_W-1:0]                rail_fault_xor,
     // --- SRAM read data exposed (for verification / observe) ---
     output wire [ROWS*COLS*SRAM_DW-1:0]     sram_rdata_flat,
     // --- compute fabric outputs ---
     output wire [ROWS*ACC_W-1:0]            ext_out_east,
-    output wire [ROWS*COLS*ACC_W-1:0]       all_pe_out
+    output wire [ROWS*COLS*ACC_W-1:0]       all_pe_out,
+    // --- runtime fault syndrome (mod-3 end-to-end protection) ---
+    // rail_err_*  : transport check at each PE tap — source residue vs the
+    //               data that actually arrived. A rail defect fires the flag
+    //               at every tap it feeds -> the PATTERN names the rail.
+    // mac_err_flat: per-PE compute check (residue-verified MAC) — a PE defect
+    //               fires exactly one flag -> the INDEX names the PE.
+    output wire [ROWS*COLS-1:0]             rail_err_w_flat,
+    output wire [ROWS*COLS-1:0]             rail_err_n_flat,
+    output wire [ROWS*COLS-1:0]             mac_err_flat
 );
+    // ---- rail residue sources + wire-defect injection points ----
+    // Residue computed at the DRIVER (pre-fault); data may be corrupted on the
+    // way to the taps. Each tap re-derives the residue and compares.
+    wire [1:0]        res_w_src [0:ROWS-1];
+    wire [1:0]        res_n_src [0:COLS-1];
+    wire [DATA_W-1:0] west_rail [0:ROWS-1];
+    wire [DATA_W-1:0] north_rail[0:COLS-1];
+
+    genvar gr, gc;
+    generate
+        for (gr = 0; gr < ROWS; gr = gr+1) begin : wres
+            mod3_reduce #(.W(DATA_W)) u_m3
+                (.x(ext_in_west[gr*DATA_W +: DATA_W]), .r(res_w_src[gr]));
+            assign west_rail[gr] = rail_fault_w_en[gr]
+                ? (ext_in_west[gr*DATA_W +: DATA_W] ^ rail_fault_xor)
+                :  ext_in_west[gr*DATA_W +: DATA_W];
+        end
+        for (gc = 0; gc < COLS; gc = gc+1) begin : nres
+            mod3_reduce #(.W(DATA_W)) u_m3
+                (.x(ext_in_north[gc*DATA_W +: DATA_W]), .r(res_n_src[gc]));
+            assign north_rail[gc] = rail_fault_n_en[gc]
+                ? (ext_in_north[gc*DATA_W +: DATA_W] ^ rail_fault_xor)
+                :  ext_in_north[gc*DATA_W +: DATA_W];
+        end
+    endgenerate
     wire [ACC_W-1:0]  pe_out_acc  [0:ROWS*COLS-1];
     wire [DATA_W-1:0] pe_out_mesh [0:ROWS*COLS-1];
     wire [SRAM_DW-1:0] sram_rdata_w  [0:ROWS*COLS-1];  // port A read (BIST/verify)
@@ -82,20 +122,30 @@ module sage16_4x4_mac #(
 
             // ---- mesh neighbours ----
             wire [DATA_W-1:0] wn, ws, we, ww;
-            if (r == 0)       assign wn = ext_in_north[c*DATA_W +: DATA_W];
+            if (r == 0)       assign wn = north_rail[c];
             else              assign wn = pe_out_mesh[(r-1)*COLS + c];
             if (r == ROWS-1)  assign ws = {DATA_W{1'b0}};
             else              assign ws = pe_out_mesh[(r+1)*COLS + c];
             if (c == COLS-1)  assign we = {DATA_W{1'b0}};
             else              assign we = pe_out_mesh[r*COLS + (c+1)];
-            if (c == 0)       assign ww = ext_in_west[r*DATA_W +: DATA_W];
+            if (c == 0)       assign ww = west_rail[r];
             else              assign ww = pe_out_mesh[r*COLS + (c-1)];
 
-            // ---- broadcast operand delivery ----
-            wire [DATA_W-1:0] bypass_bcast = ext_in_west[r*DATA_W +: DATA_W];
+            // ---- broadcast operand delivery (via protected rails) ----
+            wire [DATA_W-1:0] bypass_bcast = west_rail[r];
             wire [DATA_W-1:0] bypass_perpe = per_pe_bypass_flat[IDX*DATA_W +: DATA_W];
             wire [DATA_W-1:0] bypass = per_pe_bypass_en ? bypass_perpe : bypass_bcast;
-            wire [DATA_W-1:0] b_col  = ext_in_north[c*DATA_W +: DATA_W];
+            wire [DATA_W-1:0] b_col  = north_rail[c];
+
+            // ---- rail transport check at this tap ----
+            // Re-derive the residue from the data that ARRIVED and compare to
+            // the residue computed at the driver. Always-on: zero data with
+            // zero residue is consistent, so idle rails never false-flag.
+            wire [1:0] res_w_tap, res_n_tap;
+            mod3_reduce #(.W(DATA_W)) u_m3_wtap (.x(west_rail[r]),  .r(res_w_tap));
+            mod3_reduce #(.W(DATA_W)) u_m3_ntap (.x(north_rail[c]), .r(res_n_tap));
+            assign rail_err_w_flat[IDX] = (res_w_tap != res_w_src[r]);
+            assign rail_err_n_flat[IDX] = (res_n_tap != res_n_src[c]);
 
             // ---- SRAM write-data mux: PE accumulator OR external value ----
             wire [SRAM_DW-1:0] sram_wdata_pe  = pe_out_acc[IDX];
@@ -145,7 +195,8 @@ module sage16_4x4_mac #(
                 .fault_en   (fault_en_flat[IDX]),
                 .fault_xor  (fault_xor),
                 .out_mesh   (pe_out_mesh[IDX]),
-                .out        (pe_out_acc [IDX])
+                .out        (pe_out_acc [IDX]),
+                .mac_err    (mac_err_flat[IDX])
             );
 
             if (c == COLS-1)

@@ -67,6 +67,9 @@ module matmul_sage16 #(
         .sel_src_b_flat      (16'b0),
         .fault_en_flat       (16'b0),
         .fault_xor           (32'b0),
+        .rail_fault_w_en     (4'b0),
+        .rail_fault_n_en     (4'b0),
+        .rail_fault_xor      (16'b0),
         .sram_rdata_flat     (),
         .ext_out_east(east_out),
         .all_pe_out  (all_pe_out)

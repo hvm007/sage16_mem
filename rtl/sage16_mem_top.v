@@ -145,6 +145,9 @@ module sage16_mem_top #(
         .sel_src_b_flat     (mux_sel_src_b),
         .fault_en_flat      (16'b0),
         .fault_xor          (32'b0),
+        .rail_fault_w_en    (4'b0),
+        .rail_fault_n_en    (4'b0),
+        .rail_fault_xor     (16'b0),
         .sram_rdata_flat    (sram_rdata_flat),
         .ext_out_east       (ext_out_east),
         .all_pe_out         (all_pe_out)

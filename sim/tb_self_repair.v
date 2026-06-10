@@ -48,6 +48,7 @@ module tb_self_repair;
         .sram_addr_flat(128'b0), .sram_raddr2_flat(128'b0), .sram_wdata_sel(16'b0),
         .sram_wdata_ext_flat(512'b0), .sel_src_a_flat(16'b0), .sel_src_b_flat(16'b0),
         .fault_en_flat(fault_en_flat), .fault_xor(fault_xor),
+        .rail_fault_w_en(4'b0), .rail_fault_n_en(4'b0), .rail_fault_xor(16'b0),
         .sram_rdata_flat(), .ext_out_east(), .all_pe_out(all_pe_out)
     );
 

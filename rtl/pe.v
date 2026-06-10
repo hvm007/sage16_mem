@@ -47,7 +47,11 @@ module pe #(
     input  wire [ACC_W-1:0]      fault_xor,     // bits XOR'd into the result when fault_en
     // --- outputs ---
     output wire [DATA_W-1:0]     out_mesh,
-    output reg  [ACC_W-1:0]      out
+    output reg  [ACC_W-1:0]      out,
+    // --- runtime self-check: residue (mod-3) verification of the MAC ---
+    // Fires the cycle after a corrupted accumulate. Independent re-derivation
+    // from the OPERANDS, so it covers multiplier, adder and accumulator faults.
+    output wire                  mac_err
 );
     localparam OP_ADD   =4'd0,  OP_SUB  =4'd1,  OP_MUL  =4'd2, OP_AND =4'd3,
                OP_OR    =4'd4,  OP_XOR  =4'd5,  OP_PASS =4'd6, OP_MUX =4'd7,
@@ -153,6 +157,69 @@ module pe #(
         else if (out_en)  out <= alu_out_fi;
 
     assign out_mesh = out[DATA_W-1:0];
+
+    // ------------- runtime residue self-check (mod-3, end-to-end) -------------
+    // Predicts the residue of the next accumulator value from the OPERANDS:
+    //     mod3(out_next) == mod3(mod3(a)*mod3(b) + mod3(out) - carry_out)
+    // and compares against the residue of what the accumulator actually
+    // latched, one cycle later. The residue pipeline mirrors the multiplier
+    // pipeline stage-for-stage so the comparison is always aligned.
+    //
+    // End-around carry: the accumulate is mod 2^ACC_W and 2^32 == 1 (mod 3),
+    // so a wraparound subtracts 1 from the true residue; we add 2 (== -1) to
+    // the prediction when the 33-bit add carries out. Without this, a healthy
+    // PE accumulating large values would false-alarm.
+    //
+    // Scope: enabled for OP_MACB (unsigned MAC, the matmul/conv workhorse).
+    // Signed residue prediction (OP_MACB_S) is standard but not wired yet.
+
+    wire [1:0] res_a_d, res_b_d, res_self, res_out;
+    mod3_reduce #(.W(DATA_W)) u_m3_a   (.x(mul_a_raw), .r(res_a_d));
+    mod3_reduce #(.W(DATA_W)) u_m3_b   (.x(mul_b_raw), .r(res_b_d));
+    mod3_reduce #(.W(ACC_W))  u_m3_self(.x(in_self),   .r(res_self));
+    mod3_reduce #(.W(ACC_W))  u_m3_out (.x(out),       .r(res_out));
+
+    // stage 1: operand residues (aligns with mul_a_q/mul_b_q)
+    reg [1:0] res_a_q, res_b_q;
+    always @(posedge clk) begin
+        res_a_q <= res_a_d;
+        res_b_q <= res_b_d;
+    end
+    wire [1:0] res_a_eff = PIPELINE ? res_a_q : res_a_d;
+    wire [1:0] res_b_eff = PIPELINE ? res_b_q : res_b_d;
+
+    // stage 2: product residue (aligns with mul_prod_q)
+    wire [3:0] res_prod_raw = res_a_eff * res_b_eff;       // in {0,1,2,4}
+    wire [1:0] res_prod_d   = (res_prod_raw == 4'd4) ? 2'd1 :   // 4 == 1 mod 3
+                              (res_prod_raw == 4'd3) ? 2'd0 :
+                                                       res_prod_raw[1:0];
+    reg [1:0] res_prod_q;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) res_prod_q <= 0;
+        else        res_prod_q <= res_prod_d;
+    wire [1:0] res_prod_eff = PIPELINE ? res_prod_q : res_prod_d;
+
+    // stage 3: predicted accumulator residue, with end-around carry correction
+    wire [ACC_W:0] acc_sum33 = {1'b0, mul_prod_unsigned} + {1'b0, in_self};
+    wire [3:0] res_pred_raw  = {2'b00, res_prod_eff} + {2'b00, res_self}
+                             + (acc_sum33[ACC_W] ? 4'd2 : 4'd0);   // -1 == +2 mod 3
+    mod3_reduce #(.W(4)) u_m3_pred (.x(res_pred_raw), .r(res_pred_d_w));
+    wire [1:0] res_pred_d_w;
+
+    reg  [1:0] res_pred_q;
+    reg        chk_vld_q;
+    wire       chk_arm = out_en & ~clr_acc & (op == OP_MACB);
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) begin
+            res_pred_q <= 0;
+            chk_vld_q  <= 1'b0;
+        end else begin
+            res_pred_q <= res_pred_d_w;
+            chk_vld_q  <= chk_arm;
+        end
+
+    // stage 4: compare prediction against what the accumulator actually holds
+    assign mac_err = chk_vld_q & (res_out != res_pred_q);
 endmodule
 
 `default_nettype wire

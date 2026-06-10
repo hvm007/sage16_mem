@@ -69,6 +69,7 @@ module tb_pe_sram;
         .sram_raddr2_flat(sram_raddr2),
         .fault_en_flat(16'b0),
         .fault_xor(32'b0),
+        .rail_fault_w_en(4'b0), .rail_fault_n_en(4'b0), .rail_fault_xor(16'b0),
         .sram_rdata_flat(sram_rdata),
         .ext_out_east(ext_out_east),
         .all_pe_out(all_pe_out)
