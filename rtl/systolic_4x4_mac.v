@@ -67,10 +67,20 @@ module systolic_4x4_mac #(
         for (c = 0; c < N; c = c+1) begin : sc
             localparam IDX = r*N + c;
 
-            wire [DATA_W-1:0] a_in  = (c == 0) ? a_left_flat[r*DATA_W +: DATA_W]
-                                               : a_reg[r*N + (c-1)];
-            wire [ACC_W-1:0]  ps_in = (r == 0) ? {ACC_W{1'b0}}
-                                               : acc[(r-1)*N + c];
+            // generate-if (not ternary) so the edge case never elaborates a
+            // negative array index — synthesis-clean
+            wire [DATA_W-1:0] a_in;
+            wire [ACC_W-1:0]  ps_in;
+            if (c == 0) begin : g_a_edge
+                assign a_in = a_left_flat[r*DATA_W +: DATA_W];
+            end else begin : g_a_int
+                assign a_in = a_reg[r*N + (c-1)];
+            end
+            if (r == 0) begin : g_ps_edge
+                assign ps_in = {ACC_W{1'b0}};
+            end else begin : g_ps_int
+                assign ps_in = acc[(r-1)*N + c];
+            end
 
             // MAC: this PE multiplies the activation it currently holds by its
             // weight and adds the partial sum coming from above.
