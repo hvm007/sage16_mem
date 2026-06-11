@@ -63,10 +63,21 @@ iverilog -o build/demo_syn sim/tb_syndrome.v rtl/pe.v rtl/sage16_4x4_mac.v rtl/s
 vvp build/demo_syn
 
 echo.
+echo ###############################################################################
+echo #  BONUS / 6 - ERASURE-ABFT: located faults corrected ALGEBRAICALLY          #
+echo #  watch: checksum PEs ride the existing rails (zero extra cycles);          #
+echo #  1 fault fixed with ONE subtraction (vs 9-cycle recompute);                #
+echo #  2 faults solved exactly via modular inverse - no divider, no spare        #
+echo ###############################################################################
+iverilog -o build/demo_abft sim/tb_erasure_abft.v rtl/abft_checksum.v rtl/pe.v rtl/sage16_4x4_mac.v rtl/sram_1rw_256x32.v rtl/mod3_reduce.v || goto :err
+vvp build/demo_abft
+
+echo.
 echo ===============================================================================
-echo  DEMO COMPLETE - the five results above are the paper's evidence chain:
+echo  DEMO COMPLETE - the six results above are the paper's evidence chain:
 echo    dataflow contains the fault -^> containment makes repair 1/N cost -^>
-echo    residue code detects in-cycle -^> syndrome names the broken part free.
+echo    residue code detects in-cycle -^> syndrome names the broken part free -^>
+echo    known location turns errors into ERASURES -^> 1-cycle algebraic repair.
 echo ===============================================================================
 goto :eof
 
