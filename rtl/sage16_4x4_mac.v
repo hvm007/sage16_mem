@@ -141,11 +141,21 @@ module sage16_4x4_mac #(
             // Re-derive the residue from the data that ARRIVED and compare to
             // the residue computed at the driver. Always-on: zero data with
             // zero residue is consistent, so idle rails never false-flag.
+            // Registered so the mod-3-then-compare is reg-to-reg (off the
+            // per-cycle critical path); flags land one cycle later, absorbed by
+            // the sticky syndrome — same treatment as the PE residue check.
             wire [1:0] res_w_tap, res_n_tap;
             mod3_reduce #(.W(DATA_W)) u_m3_wtap (.x(west_rail[r]),  .r(res_w_tap));
             mod3_reduce #(.W(DATA_W)) u_m3_ntap (.x(north_rail[c]), .r(res_n_tap));
-            assign rail_err_w_flat[IDX] = (res_w_tap != res_w_src[r]);
-            assign rail_err_n_flat[IDX] = (res_n_tap != res_n_src[c]);
+            reg rerr_w_q, rerr_n_q;
+            always @(posedge clk or negedge rst_n)
+                if (!rst_n) begin rerr_w_q <= 1'b0; rerr_n_q <= 1'b0; end
+                else begin
+                    rerr_w_q <= (res_w_tap != res_w_src[r]);
+                    rerr_n_q <= (res_n_tap != res_n_src[c]);
+                end
+            assign rail_err_w_flat[IDX] = rerr_w_q;
+            assign rail_err_n_flat[IDX] = rerr_n_q;
 
             // ---- SRAM write-data mux: PE accumulator OR external value ----
             wire [SRAM_DW-1:0] sram_wdata_pe  = pe_out_acc[IDX];

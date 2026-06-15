@@ -218,8 +218,25 @@ module pe #(
             chk_vld_q  <= chk_arm;
         end
 
-    // stage 4: compare prediction against what the accumulator actually holds
-    assign mac_err = chk_vld_q & (res_out != res_pred_q);
+    // stage 4: register the accumulator's residue so the long mod-3-of-32-bit
+    // path becomes reg-to-reg (out -> mod3 -> res_out_q), and delay the
+    // prediction one more cycle to stay aligned. Detection is then one cycle
+    // later — harmless for a checker (the syndrome is captured sticky). This
+    // removes the residue check from the per-cycle critical path with no Fmax
+    // penalty. PIPELINE=1 uses the registered compare; PIPELINE=0 (combinational
+    // multiplier path) keeps the original single-cycle compare.
+    reg [1:0] res_out_q, res_pred_q2;
+    reg       chk_vld_q2;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) begin res_out_q <= 0; res_pred_q2 <= 0; chk_vld_q2 <= 0; end
+        else begin
+            res_out_q   <= res_out;
+            res_pred_q2 <= res_pred_q;
+            chk_vld_q2  <= chk_vld_q;
+        end
+
+    assign mac_err = PIPELINE ? (chk_vld_q2 & (res_out_q != res_pred_q2))
+                              : (chk_vld_q  & (res_out   != res_pred_q));
 endmodule
 
 `default_nettype wire

@@ -10,13 +10,16 @@ REM   2. OUR PROPERTY  - our broadcast fabric contains it to ONE output
 REM   3. THE REPAIR    - so fixing it costs ONE recompute (9 cycles), 16/16
 REM   4. THE DETECTION - residue self-check catches the fault the cycle it happens
 REM   5. THE SYNDROME  - flag pattern alone says WHAT broke and WHERE (26/26)
+REM   6. ERASURE-ABFT  - located faults corrected ALGEBRAICALLY: 1 fault = 1
+REM                      subtraction (16/16), 2 faults = exact 2x2 solve (24/24);
+REM                      checksum PEs ride existing rails, zero extra cycles
 REM =============================================================================
 setlocal
 if not exist build mkdir build
 
 echo.
 echo ###############################################################################
-echo #  STEP 1 / 5 - BASELINE (the problem): systolic array, fault ONE PE         #
+echo #  STEP 1 / 6 - BASELINE (the problem): systolic array, fault ONE PE         #
 echo #  watch: one fault corrupts up to a FULL COLUMN of outputs (line error)     #
 echo ###############################################################################
 iverilog -o build/demo_sys sim/tb_systolic_containment.v rtl/systolic_4x4_mac.v || goto :err
@@ -24,7 +27,7 @@ vvp build/demo_sys
 
 echo.
 echo ###############################################################################
-echo #  STEP 2 / 5 - OURS (the property): broadcast fabric, fault ONE PE          #
+echo #  STEP 2 / 6 - OURS (the property): broadcast fabric, fault ONE PE          #
 echo #  watch: every fault stays in exactly ONE output - containment is           #
 echo #  structural (no PE-to-PE forwarding), not added hardware                   #
 echo ###############################################################################
@@ -33,7 +36,7 @@ vvp build/demo_fc
 
 echo.
 echo ###############################################################################
-echo #  STEP 3 / 5 - REPAIR (the payoff): recompute the 1 bad output on a spare   #
+echo #  STEP 3 / 6 - REPAIR (the payoff): recompute the 1 bad output on a spare   #
 echo #  watch: 16/16 faults fully repaired, 9 cycles each (one inner product).    #
 echo #  a systolic array would have to redo the whole corrupted column            #
 echo ###############################################################################
@@ -42,7 +45,7 @@ vvp build/demo_sr
 
 echo.
 echo ###############################################################################
-echo #  STEP 4 / 5 - DETECTION (runtime): mod-3 residue self-check per PE         #
+echo #  STEP 4 / 6 - DETECTION (runtime): mod-3 residue self-check per PE         #
 echo #  watch: the fault is flagged THE CYCLE it happens - no golden model,       #
 echo #  no waiting for the output. then: coverage numbers (100%% single-bit)      #
 echo ###############################################################################
@@ -53,7 +56,7 @@ vvp build/demo_rcov
 
 echo.
 echo ###############################################################################
-echo #  STEP 5 / 5 - SYNDROME (industrial): end-to-end protection, 26 fault cases #
+echo #  STEP 5 / 6 - SYNDROME (industrial): end-to-end protection, 26 fault cases #
 echo #  watch: the flag PATTERN alone classifies and locates every fault -        #
 echo #  single mac_err = that PE; rail_err along a row/col = that rail.           #
 echo #  includes wraparound stress (end-around carry correction) and proof        #
@@ -64,7 +67,7 @@ vvp build/demo_syn
 
 echo.
 echo ###############################################################################
-echo #  BONUS / 6 - ERASURE-ABFT: located faults corrected ALGEBRAICALLY          #
+echo #  STEP 6 / 6 - ERASURE-ABFT: located faults corrected ALGEBRAICALLY          #
 echo #  watch: checksum PEs ride the existing rails (zero extra cycles);          #
 echo #  1 fault fixed with ONE subtraction (vs 9-cycle recompute);                #
 echo #  2 faults solved exactly via modular inverse - no divider, no spare        #

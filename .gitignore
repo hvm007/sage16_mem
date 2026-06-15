@@ -1,5 +1,19 @@
+# =============================================================================
+# IP-HOLD — DO NOT PUBLISH. Aging-prognosis + theorem work, kept private pending
+# the patent decision (no grace period in IN — public disclosure kills the right).
+# These stay LOCAL ONLY. Never commit/push.
+# =============================================================================
+rtl/aging_monitor.v
+rtl/drift_tracker.v
+sim/tb_aging_sensor.v
+sim/tb_theorem_T1.v
+sim/tb_theorem_T2.v
+sim/tb_theorem_stress.v
+
 # build artifacts — ignore the whole dir
 build/
+reports/
+*.dcp
 *.vvp
 *.vcd
 *.jou
