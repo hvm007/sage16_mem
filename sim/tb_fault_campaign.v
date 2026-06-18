@@ -46,8 +46,8 @@ module tb_fault_campaign;
         .sram_cs_n_flat({NUM_PE{1'b1}}), .sram_we_n_flat({NUM_PE{1'b1}}),
         .sram_addr_flat(128'b0), .sram_raddr2_flat(128'b0), .sram_wdata_sel(16'b0),
         .sram_wdata_ext_flat(512'b0), .sel_src_a_flat(16'b0), .sel_src_b_flat(16'b0),
-        .fault_en_flat(fault_en_flat), .fault_xor(fault_xor),
-        .rail_fault_w_en(4'b0), .rail_fault_n_en(4'b0), .rail_fault_xor(16'b0),
+        // PE faults injected from the TB (force/release) - no DUT hook
+        // (rail-fault hook removed from the fabric)
         .sram_rdata_flat(), .ext_out_east(), .all_pe_out(all_pe_out),
         .rail_err_w_flat(), .rail_err_n_flat(), .mac_err_flat(mac_err_flat)
     );
@@ -220,6 +220,22 @@ module tb_fault_campaign;
     end
 
     initial begin #2000000000; $display("TIMEOUT"); $finish; end
+    // ---- TB-SIDE permanent PE-fault injector (DUT datapath is clean) ----
+    // Replaces the removed in-PE hook: force/release each PE accumulator,
+    // corrupting only on an accumulating cycle (out_en & !clr) so the value
+    // sequence is bit-identical to the old `out <= alu_out ^ fault_xor`.
+    genvar fipe;
+    generate for (fipe=0; fipe<16; fipe=fipe+1) begin : FINJ
+        reg [ACC_W-1:0] fi_clean;
+        always @(posedge clk) begin
+            release dut.rg[fipe/4].cg[fipe%4].u_pe.out;
+            if (fault_en_flat[fipe] && out_en_all && !clr_acc_all) begin
+                #1 fi_clean = dut.rg[fipe/4].cg[fipe%4].u_pe.out;
+                force dut.rg[fipe/4].cg[fipe%4].u_pe.out = fi_clean ^ fault_xor;
+            end
+        end
+    end endgenerate
+
 endmodule
 
 `default_nettype wire

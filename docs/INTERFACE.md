@@ -74,13 +74,13 @@ So matmul config word = `{4'd9, 3'd0, 3'd0}`.
 > For a pure rail-fed matmul you can tie **all** SRAM inputs off (`cs_n=1`, `sel_src=0`,
 > addresses 0). Use SRAM only when you want operands to live on-chip (the host-free mode).
 
-### Fault injection — **experiments only, tie to 0 in the real system**
-| Port | Dir | Width | Meaning |
-|---|---|---|---|
-| `fault_en_flat` | in | 16 | force a permanent PE fault (per PE) |
-| `fault_xor` | in | 32 | bits XOR'd into the faulted PE's result |
-| `rail_fault_w_en` / `rail_fault_n_en` | in | 4 / 4 | force a rail (wire) fault |
-| `rail_fault_xor` | in | 16 | bits XOR'd onto the faulted rail |
+### Fault injection — **testbench only, no ports**
+> **Faults are NOT ports.** Both the permanent PE-fault model and the rail
+> (wire-defect) model live in the testbenches via force/release — see the
+> `FINJ` (PE accumulator) and `RWFI`/`RNFI` (rail wire) generate blocks in
+> e.g. `tb_syndrome.v`. The taped-out fabric carries **zero** fault-injection
+> logic; the only fault-related ports are the syndrome *outputs*
+> (`mac_err_flat`, `rail_err_w_flat`, `rail_err_n_flat`) listed below.
 
 ### Outputs — results
 | Port | Dir | Width | Meaning |
@@ -153,7 +153,6 @@ sequencer wants correction instead of recompute-on-spare.
 .sram_addr_flat(128'b0), .sram_raddr2_flat(128'b0),
 .sram_wdata_sel(16'b0), .sram_wdata_ext_flat(512'b0),
 .sel_src_a_flat(16'b0), .sel_src_b_flat(16'b0),
-.fault_en_flat(16'b0), .fault_xor(32'b0),
 .rail_fault_w_en(4'b0), .rail_fault_n_en(4'b0), .rail_fault_xor(16'b0),
 ```
 

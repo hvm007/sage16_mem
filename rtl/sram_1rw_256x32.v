@@ -40,7 +40,11 @@ module sram_1rw_256x32 #(
     output wire [DATA_W-1:0] rdata,
     // ---- Port B: read-only ----
     input  wire [ADDR_W-1:0] raddr2,
-    output wire [DATA_W-1:0] rdata2
+    output wire [DATA_W-1:0] rdata2,
+    // ---- residue tag (mod-3 of the stored word), carried with the data ----
+    input  wire [1:0]        wtag,
+    output wire [1:0]        rtag,
+    output wire [1:0]        rtag2
 );
 
 `ifdef ASIC_CADENCE45
@@ -103,6 +107,30 @@ module sram_1rw_256x32 #(
     assign rdata  = rdata_r;
     assign rdata2 = rdata2_r;
 `endif
+
+    // ---- residue tag store (common to all backends; small 2-bit-wide memory) ----
+    // Written from `wtag` (the fabric computes mod3(wdata)); read out alongside the
+    // data on both ports, with the same write-first / read-old timing as the data.
+    // A stored-word corruption is then caught in-cycle when the word is consumed as
+    // a MAC operand: the PE predicts from this trusted tag while the multiplier sees
+    // the corrupted value -> residue mismatch (mac_err).
+    reg [1:0] tagmem [0:DEPTH-1];
+    reg [1:0] rtag_r, rtag2_r;
+    integer ti;
+    initial begin
+        for (ti = 0; ti < DEPTH; ti = ti + 1) tagmem[ti] = 2'd0;
+        rtag_r = 0; rtag2_r = 0;
+    end
+    always @(posedge clk) begin            // Port A tag (mirrors data port A)
+        if (!cs_n) begin
+            if (!we_n) tagmem[addr] <= wtag;
+            rtag_r <= (!we_n) ? wtag : tagmem[addr];
+        end
+    end
+    always @(posedge clk)                  // Port B tag (read-old)
+        rtag2_r <= tagmem[raddr2];
+    assign rtag  = rtag_r;
+    assign rtag2 = rtag2_r;
 
 endmodule
 

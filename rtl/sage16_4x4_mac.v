@@ -32,6 +32,7 @@ module sage16_4x4_mac #(
     parameter ACC_W    = 32,
     parameter CFG_W    = 10,
     parameter PIPELINE = 1,
+    parameter RESIDUE_MOD7 = 0,        // threaded to every PE (0 = mod-3 only)
     parameter SRAM_AW  = 8,            // 256 words
     parameter SRAM_DW  = 32
 )(
@@ -57,15 +58,6 @@ module sage16_4x4_mac #(
     input  wire [ROWS*COLS-1:0]             sel_src_b_flat,
     // --- SRAM port B: dedicated read addr per PE (for PE operand fetch) ---
     input  wire [ROWS*COLS*SRAM_AW-1:0]     sram_raddr2_flat,
-    // --- fault injection (per-PE enable; shared xor mask). 0 = all healthy ---
-    input  wire [ROWS*COLS-1:0]             fault_en_flat,
-    input  wire [ACC_W-1:0]                 fault_xor,
-    // --- rail fault injection (broadcast-wire defect model). 0 = healthy ---
-    // Corrupts the named rail AFTER the source residue is computed, i.e. a
-    // defect on the wire/repeater between driver and taps.
-    input  wire [ROWS-1:0]                  rail_fault_w_en,
-    input  wire [COLS-1:0]                  rail_fault_n_en,
-    input  wire [DATA_W-1:0]                rail_fault_xor,
     // --- SRAM read data exposed (for verification / observe) ---
     output wire [ROWS*COLS*SRAM_DW-1:0]     sram_rdata_flat,
     // --- compute fabric outputs ---
@@ -81,9 +73,11 @@ module sage16_4x4_mac #(
     output wire [ROWS*COLS-1:0]             rail_err_n_flat,
     output wire [ROWS*COLS-1:0]             mac_err_flat
 );
-    // ---- rail residue sources + wire-defect injection points ----
-    // Residue computed at the DRIVER (pre-fault); data may be corrupted on the
-    // way to the taps. Each tap re-derives the residue and compares.
+    // ---- rail residue sources ----
+    // Residue computed at the DRIVER from the clean input; each tap re-derives
+    // the residue from the data that ARRIVED on the rail and compares. A
+    // wire-defect is modelled in the TESTBENCH by force/release on west_rail/
+    // north_rail (see tb_syndrome) — the silicon rail carries no injection mux.
     wire [1:0]        res_w_src [0:ROWS-1];
     wire [1:0]        res_n_src [0:COLS-1];
     wire [DATA_W-1:0] west_rail [0:ROWS-1];
@@ -94,22 +88,19 @@ module sage16_4x4_mac #(
         for (gr = 0; gr < ROWS; gr = gr+1) begin : wres
             mod3_reduce #(.W(DATA_W)) u_m3
                 (.x(ext_in_west[gr*DATA_W +: DATA_W]), .r(res_w_src[gr]));
-            assign west_rail[gr] = rail_fault_w_en[gr]
-                ? (ext_in_west[gr*DATA_W +: DATA_W] ^ rail_fault_xor)
-                :  ext_in_west[gr*DATA_W +: DATA_W];
+            assign west_rail[gr] = ext_in_west[gr*DATA_W +: DATA_W];
         end
         for (gc = 0; gc < COLS; gc = gc+1) begin : nres
             mod3_reduce #(.W(DATA_W)) u_m3
                 (.x(ext_in_north[gc*DATA_W +: DATA_W]), .r(res_n_src[gc]));
-            assign north_rail[gc] = rail_fault_n_en[gc]
-                ? (ext_in_north[gc*DATA_W +: DATA_W] ^ rail_fault_xor)
-                :  ext_in_north[gc*DATA_W +: DATA_W];
+            assign north_rail[gc] = ext_in_north[gc*DATA_W +: DATA_W];
         end
     endgenerate
     wire [ACC_W-1:0]  pe_out_acc  [0:ROWS*COLS-1];
     wire [DATA_W-1:0] pe_out_mesh [0:ROWS*COLS-1];
     wire [SRAM_DW-1:0] sram_rdata_w  [0:ROWS*COLS-1];  // port A read (BIST/verify)
     wire [SRAM_DW-1:0] sram_rdata2_w [0:ROWS*COLS-1];  // port B read (PE operand)
+    wire [1:0]         sram_rtag2_w  [0:ROWS*COLS-1];  // port B tag (SRAM operand residue)
 
     genvar r, c;
     generate for (r = 0; r < ROWS; r = r+1) begin : rg
@@ -163,6 +154,10 @@ module sage16_4x4_mac #(
             wire [SRAM_DW-1:0] sram_wdata     =
                 sram_wdata_sel[IDX] ? sram_wdata_ext : sram_wdata_pe;
 
+            // residue tag for the written word (mod-3), carried with the data
+            wire [1:0] sram_wtag;
+            mod3_reduce #(.W(SRAM_DW)) u_m3_wtag (.x(sram_wdata), .r(sram_wtag));
+
             // ---- paired SRAM ----
             sram_1rw_256x32 u_mem (
                 .clk   (clk),
@@ -174,17 +169,22 @@ module sage16_4x4_mac #(
                 .rdata (sram_rdata_w[IDX]),
                 // port B: dedicated read (PE operand fetch) — concurrent with A
                 .raddr2(sram_raddr2_flat[IDX*SRAM_AW +: SRAM_AW]),
-                .rdata2(sram_rdata2_w[IDX])
+                .rdata2(sram_rdata2_w[IDX]),
+                // residue tag carried with the word
+                .wtag  (sram_wtag),
+                .rtag  (),
+                .rtag2 (sram_rtag2_w[IDX])
             );
 
             assign sram_rdata_flat[IDX*SRAM_DW +: SRAM_DW] = sram_rdata_w[IDX];
 
             // ---- PE ----
             pe #(
-                .DATA_W  (DATA_W),
-                .ACC_W   (ACC_W),
-                .CFG_W   (CFG_W),
-                .PIPELINE(PIPELINE)
+                .DATA_W      (DATA_W),
+                .ACC_W       (ACC_W),
+                .CFG_W       (CFG_W),
+                .PIPELINE    (PIPELINE),
+                .RESIDUE_MOD7(RESIDUE_MOD7)
             ) u_pe (
                 .clk        (clk),
                 .rst_n      (rst_n),
@@ -202,8 +202,9 @@ module sage16_4x4_mac #(
                 .sram_rdata (sram_rdata2_w[IDX]),   // PE reads via port B
                 .sel_src_a  (sel_src_a_flat[IDX]),
                 .sel_src_b  (sel_src_b_flat[IDX]),
-                .fault_en   (fault_en_flat[IDX]),
-                .fault_xor  (fault_xor),
+                .res_a_in   (res_w_tap),            // operand-A residue (rail tap, carried)
+                .res_b_in   (res_n_tap),            // operand-B residue (rail tap, carried)
+                .sram_res   (sram_rtag2_w[IDX]),    // SRAM-word residue (stored tag)
                 .out_mesh   (pe_out_mesh[IDX]),
                 .out        (pe_out_acc [IDX]),
                 .mac_err    (mac_err_flat[IDX])

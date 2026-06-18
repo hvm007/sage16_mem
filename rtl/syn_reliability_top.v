@@ -86,8 +86,6 @@ module syn_reliability_top #(
         .sram_addr_flat(addr), .sram_raddr2_flat(raddr2),
         .sram_wdata_sel(wsel), .sram_wdata_ext_flat(512'b0),
         .sel_src_a_flat(16'b0), .sel_src_b_flat(16'b0),
-        .fault_en_flat(16'b0), .fault_xor(32'b0),
-        .rail_fault_w_en(4'b0), .rail_fault_n_en(4'b0), .rail_fault_xor(16'b0),
         .sram_rdata_flat(sram_rd), .ext_out_east(), .all_pe_out(all_pe_out),
         .rail_err_w_flat(rerr_w), .rail_err_n_flat(rerr_n), .mac_err_flat(mac_err)
     );

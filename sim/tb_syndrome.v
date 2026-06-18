@@ -50,9 +50,8 @@ module tb_syndrome;
         .sram_cs_n_flat({NUM_PE{1'b1}}), .sram_we_n_flat({NUM_PE{1'b1}}),
         .sram_addr_flat(128'b0), .sram_raddr2_flat(128'b0), .sram_wdata_sel(16'b0),
         .sram_wdata_ext_flat(512'b0), .sel_src_a_flat(16'b0), .sel_src_b_flat(16'b0),
-        .fault_en_flat(fault_en_flat), .fault_xor(fault_xor),
-        .rail_fault_w_en(rail_fault_w_en), .rail_fault_n_en(rail_fault_n_en),
-        .rail_fault_xor(rail_fault_xor),
+        // PE faults injected from the TB (force/release) - no DUT hook
+        // rail faults injected from the TB (force/release) - no DUT hook
         .sram_rdata_flat(), .ext_out_east(), .all_pe_out(all_pe_out),
         .rail_err_w_flat(rail_err_w_flat), .rail_err_n_flat(rail_err_n_flat),
         .mac_err_flat(mac_err_flat)
@@ -219,6 +218,48 @@ module tb_syndrome;
     end
 
     initial begin #500000; $display("TIMEOUT"); $finish; end
+    // ---- TB-SIDE permanent PE-fault injector (DUT datapath is clean) ----
+    // Replaces the removed in-PE hook: force/release each PE accumulator,
+    // corrupting only on an accumulating cycle (out_en & !clr) so the value
+    // sequence is bit-identical to the old `out <= alu_out ^ fault_xor`.
+    genvar fipe;
+    generate for (fipe=0; fipe<16; fipe=fipe+1) begin : FINJ
+        reg [ACC_W-1:0] fi_clean;
+        always @(posedge clk) begin
+            release dut.rg[fipe/4].cg[fipe%4].u_pe.out;
+            if (fault_en_flat[fipe] && out_en_all && !clr_acc_all) begin
+                #1 fi_clean = dut.rg[fipe/4].cg[fipe%4].u_pe.out;
+                force dut.rg[fipe/4].cg[fipe%4].u_pe.out = fi_clean ^ fault_xor;
+            end
+        end
+    end endgenerate
+
+    // ---- TB-SIDE rail (wire-defect) injector: force/release the rail wires ----
+    // Source residue is computed from the clean input, so corrupting the rail
+    // wire makes the tap residue disagree -> rail_err fires (same as old hook).
+    // Updated at negedge (+1) so the corrupted value is stable at the posedge
+    // the fabric samples its tap residue.
+    genvar rwi;
+    generate for (rwi=0; rwi<4; rwi=rwi+1) begin : RWFI
+        always @(negedge clk) begin
+            #1;
+            if (rail_fault_w_en[rwi])
+                force dut.west_rail[rwi] = ext_in_west[rwi*DATA_W +: DATA_W] ^ rail_fault_xor;
+            else
+                release dut.west_rail[rwi];
+        end
+    end endgenerate
+    genvar rni;
+    generate for (rni=0; rni<4; rni=rni+1) begin : RNFI
+        always @(negedge clk) begin
+            #1;
+            if (rail_fault_n_en[rni])
+                force dut.north_rail[rni] = ext_in_north[rni*DATA_W +: DATA_W] ^ rail_fault_xor;
+            else
+                release dut.north_rail[rni];
+        end
+    end endgenerate
+
 endmodule
 
 `default_nettype wire

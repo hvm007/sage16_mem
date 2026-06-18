@@ -27,7 +27,8 @@ module pe #(
     parameter DATA_W   = 16,
     parameter ACC_W    = 32,
     parameter CFG_W    = 10,
-    parameter PIPELINE = 1
+    parameter PIPELINE = 1,
+    parameter RESIDUE_MOD7 = 0   // 0 = mod-3 only (ABFT backstops multi-bit); 1 = +mod-7 ablation lane
 )(
     input  wire                  clk, rst_n,
     input  wire                  cfg_load,
@@ -42,9 +43,10 @@ module pe #(
     input  wire [ACC_W-1:0]      sram_rdata,    // from paired SRAM (1-cycle delayed)
     input  wire                  sel_src_a,     // 0 = in_bypass, 1 = sram_rdata[DATA_W-1:0]
     input  wire                  sel_src_b,     // 0 = in_b_col,  1 = sram_rdata[DATA_W-1:0]
-    // --- fault injection (permanent PE-fault model; 0 = healthy) ---
-    input  wire                  fault_en,      // 1 = this PE is faulty
-    input  wire [ACC_W-1:0]      fault_xor,     // bits XOR'd into the result when fault_en
+    // --- operand residues (mod-3) carried IN from the fabric (not recomputed) ---
+    input  wire [1:0]            res_a_in,      // residue of operand A (rail tap)
+    input  wire [1:0]            res_b_in,      // residue of operand B (rail tap)
+    input  wire [1:0]            sram_res,      // residue of SRAM word (stored tag); used when sel_src=1
     // --- outputs ---
     output wire [DATA_W-1:0]     out_mesh,
     output reg  [ACC_W-1:0]      out,
@@ -147,14 +149,13 @@ module pe #(
     end
 
     // ------------- accumulator register -------------
-    // Permanent-fault model: when fault_en, the PE's stored result is corrupted
-    // by fault_xor every cycle it updates — models a broken MAC/accumulator.
-    wire [ACC_W-1:0] alu_out_fi = fault_en ? (alu_out ^ fault_xor) : alu_out;
-
+    // Clean datapath — NO fault-injection hooks in silicon. Permanent PE-fault
+    // models live in the testbench (force/release on this register), so the
+    // taped-out PE carries zero verification logic.
     always @(posedge clk or negedge rst_n)
         if (!rst_n)       out <= 0;
         else if (clr_acc) out <= 0;
-        else if (out_en)  out <= alu_out_fi;
+        else if (out_en)  out <= alu_out;
 
     assign out_mesh = out[DATA_W-1:0];
 
@@ -173,11 +174,20 @@ module pe #(
     // Scope: enabled for OP_MACB (unsigned MAC, the matmul/conv workhorse).
     // Signed residue prediction (OP_MACB_S) is standard but not wired yet.
 
-    wire [1:0] res_a_d, res_b_d, res_self, res_out;
-    mod3_reduce #(.W(DATA_W)) u_m3_a   (.x(mul_a_raw), .r(res_a_d));
-    mod3_reduce #(.W(DATA_W)) u_m3_b   (.x(mul_b_raw), .r(res_b_d));
-    mod3_reduce #(.W(ACC_W))  u_m3_self(.x(in_self),   .r(res_self));
-    mod3_reduce #(.W(ACC_W))  u_m3_out (.x(out),       .r(res_out));
+    // res_self == res_out: the fabric is output-stationary so in_self === out (the
+    // PE's own accumulator), hence mod3(in_self) == mod3(out). One 32-bit reducer
+    // serves BOTH the prediction's addend residue and the compare's result residue.
+    //
+    // Operand residues are CARRIED IN, not recomputed: res_a_in/res_b_in are the
+    // fabric's rail-tap residues (valid when the operand is the broadcast rail, i.e.
+    // per_pe_bypass_en=0 — true for every residue-armed MACB path); sram_res is the
+    // stored SRAM-word tag, selected when the operand comes from SRAM. This removes
+    // the two per-PE operand reducers — the residue is carried, not recomputed. The
+    // check is only armed for OP_MACB, so the mesh-operand case never reaches compare.
+    wire [1:0] res_a_d = sel_src_a ? sram_res : res_a_in;
+    wire [1:0] res_b_d = sel_src_b ? sram_res : res_b_in;
+    wire [1:0] res_out;
+    mod3_reduce #(.W(ACC_W))  u_m3_out (.x(out), .r(res_out));
 
     // stage 1: operand residues (aligns with mul_a_q/mul_b_q)
     reg [1:0] res_a_q, res_b_q;
@@ -201,7 +211,7 @@ module pe #(
 
     // stage 3: predicted accumulator residue, with end-around carry correction
     wire [ACC_W:0] acc_sum33 = {1'b0, mul_prod_unsigned} + {1'b0, in_self};
-    wire [3:0] res_pred_raw  = {2'b00, res_prod_eff} + {2'b00, res_self}
+    wire [3:0] res_pred_raw  = {2'b00, res_prod_eff} + {2'b00, res_out}
                              + (acc_sum33[ACC_W] ? 4'd2 : 4'd0);   // -1 == +2 mod 3
     mod3_reduce #(.W(4)) u_m3_pred (.x(res_pred_raw), .r(res_pred_d_w));
     wire [1:0] res_pred_d_w;
@@ -235,8 +245,61 @@ module pe #(
             chk_vld_q2  <= chk_vld_q;
         end
 
-    assign mac_err = PIPELINE ? (chk_vld_q2 & (res_out_q != res_pred_q2))
-                              : (chk_vld_q  & (res_out   != res_pred_q));
+    wire mac_err3 = PIPELINE ? (chk_vld_q2 & (res_out_q != res_pred_q2))
+                             : (chk_vld_q  & (res_out   != res_pred_q));
+
+    // ===================== optional SECOND modulus: mod 7 =====================
+    // Identical pipeline to the mod-3 lane, in parallel. OR'd into mac_err so an
+    // error escapes only if it fools BOTH (a multiple of 3·7 = 21) → in-cycle
+    // multi-bit detection ~66% → ~95%. End-around carry: 2^ACC_W mod 7 = POW7
+    // (period-3: ACC_W mod 3 → {1,2,4}); a wraparound subtracts POW7, so add
+    // WRAP7 = (7-POW7) to the prediction on carry-out. (Reuses acc_sum33 + the
+    // chk_vld pipeline from the mod-3 lane.)
+    wire mac_err7;
+    generate if (RESIDUE_MOD7) begin : g_mod7
+    localparam [2:0] POW7  = (ACC_W % 3 == 0) ? 3'd1 : (ACC_W % 3 == 1) ? 3'd2 : 3'd4;
+    localparam [2:0] WRAP7 = 3'd7 - POW7;
+
+    wire [2:0] res7_a_d, res7_b_d, res7_self, res7_out;
+    mod7_reduce #(.W(DATA_W)) u_m7_a   (.x(mul_a_raw), .r(res7_a_d));
+    mod7_reduce #(.W(DATA_W)) u_m7_b   (.x(mul_b_raw), .r(res7_b_d));
+    mod7_reduce #(.W(ACC_W))  u_m7_self(.x(in_self),   .r(res7_self));
+    mod7_reduce #(.W(ACC_W))  u_m7_out (.x(out),       .r(res7_out));
+
+    reg [2:0] res7_a_q, res7_b_q;
+    always @(posedge clk) begin res7_a_q <= res7_a_d; res7_b_q <= res7_b_d; end
+    wire [2:0] res7_a_eff = PIPELINE ? res7_a_q : res7_a_d;
+    wire [2:0] res7_b_eff = PIPELINE ? res7_b_q : res7_b_d;
+
+    wire [5:0] res7_prod_raw = res7_a_eff * res7_b_eff;   // <= 36
+    wire [2:0] res7_prod_d;
+    mod7_reduce #(.W(6)) u_m7_prod (.x(res7_prod_raw), .r(res7_prod_d));
+    reg [2:0] res7_prod_q;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) res7_prod_q <= 0; else res7_prod_q <= res7_prod_d;
+    wire [2:0] res7_prod_eff = PIPELINE ? res7_prod_q : res7_prod_d;
+
+    wire [4:0] res7_pred_raw = {2'b0, res7_prod_eff} + {2'b0, res7_self}
+                             + (acc_sum33[ACC_W] ? {2'b0, WRAP7} : 5'd0);  // <= 15
+    wire [2:0] res7_pred_d;
+    mod7_reduce #(.W(5)) u_m7_pred (.x(res7_pred_raw), .r(res7_pred_d));
+    reg [2:0] res7_pred_q;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) res7_pred_q <= 0; else res7_pred_q <= res7_pred_d;
+
+    reg [2:0] res7_out_q, res7_pred_q2;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) begin res7_out_q <= 0; res7_pred_q2 <= 0; end
+        else begin res7_out_q <= res7_out; res7_pred_q2 <= res7_pred_q; end
+
+    assign mac_err7 = PIPELINE ? (chk_vld_q2 & (res7_out_q != res7_pred_q2))
+                               : (chk_vld_q  & (res7_out   != res7_pred_q));
+    end else begin : g_no_mod7
+        assign mac_err7 = 1'b0;
+    end endgenerate
+
+    // combine: flag if EITHER modulus mismatches (mac_err7 == 0 when gated off)
+    assign mac_err = mac_err3 | mac_err7;
 endmodule
 
 `default_nettype wire

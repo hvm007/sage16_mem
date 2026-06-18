@@ -107,8 +107,9 @@ module conv3x3_sage16 #(
                 .sram_rdata({ACC_W{1'b0}}),
                 .sel_src_a (1'b0),
                 .sel_src_b (1'b0),
-                .fault_en  (1'b0),
-                .fault_xor ({ACC_W{1'b0}}),
+                .res_a_in  (2'b0),     // residue check not armed for OP_MACB_S
+                .res_b_in  (2'b0),
+                .sram_res  (2'b0),
                 .out_mesh (pe_mesh[r*4+c]),
                 .out      (pe_acc [r*4+c])
             );
