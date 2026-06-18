@@ -28,6 +28,7 @@ module pe #(
     parameter ACC_W    = 32,
     parameter CFG_W    = 10,
     parameter PIPELINE = 1,
+    parameter GEN_CHECK = 1,     // 1 = residue self-check in silicon; 0 = plain MAC (PPA baseline)
     parameter RESIDUE_MOD7 = 0   // 0 = mod-3 only (ABFT backstops multi-bit); 1 = +mod-7 ablation lane
 )(
     input  wire                  clk, rst_n,
@@ -109,9 +110,9 @@ module pe #(
     wire signed [DATA_W:0] mul_b_ext = {sext_b, mul_b_raw};
 
     (* use_dsp = "yes" *) reg signed [DATA_W:0] mul_a_q, mul_b_q;
-    always @(posedge clk) begin
-        mul_a_q <= mul_a_ext;
-        mul_b_q <= mul_b_ext;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin mul_a_q <= 0; mul_b_q <= 0; end
+        else begin mul_a_q <= mul_a_ext; mul_b_q <= mul_b_ext; end
     end
 
     wire signed [DATA_W:0] mul_a_eff = PIPELINE ? mul_a_q : mul_a_ext;
@@ -184,6 +185,9 @@ module pe #(
     // stored SRAM-word tag, selected when the operand comes from SRAM. This removes
     // the two per-PE operand reducers — the residue is carried, not recomputed. The
     // check is only armed for OP_MACB, so the mesh-operand case never reaches compare.
+    // GEN_CHECK=0 strips this whole block -> plain MAC PE (reliability-off PPA
+    // baseline). GEN_CHECK=1 (default) keeps the in-cycle residue verification.
+    generate if (GEN_CHECK) begin : g_check
     wire [1:0] res_a_d = sel_src_a ? sram_res : res_a_in;
     wire [1:0] res_b_d = sel_src_b ? sram_res : res_b_in;
     wire [1:0] res_out;
@@ -191,9 +195,9 @@ module pe #(
 
     // stage 1: operand residues (aligns with mul_a_q/mul_b_q)
     reg [1:0] res_a_q, res_b_q;
-    always @(posedge clk) begin
-        res_a_q <= res_a_d;
-        res_b_q <= res_b_d;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin res_a_q <= 0; res_b_q <= 0; end
+        else begin res_a_q <= res_a_d; res_b_q <= res_b_d; end
     end
     wire [1:0] res_a_eff = PIPELINE ? res_a_q : res_a_d;
     wire [1:0] res_b_eff = PIPELINE ? res_b_q : res_b_d;
@@ -256,7 +260,7 @@ module pe #(
     // WRAP7 = (7-POW7) to the prediction on carry-out. (Reuses acc_sum33 + the
     // chk_vld pipeline from the mod-3 lane.)
     wire mac_err7;
-    generate if (RESIDUE_MOD7) begin : g_mod7
+    if (RESIDUE_MOD7) begin : g_mod7
     localparam [2:0] POW7  = (ACC_W % 3 == 0) ? 3'd1 : (ACC_W % 3 == 1) ? 3'd2 : 3'd4;
     localparam [2:0] WRAP7 = 3'd7 - POW7;
 
@@ -296,10 +300,13 @@ module pe #(
                                : (chk_vld_q  & (res7_out   != res7_pred_q));
     end else begin : g_no_mod7
         assign mac_err7 = 1'b0;
-    end endgenerate
+    end
 
     // combine: flag if EITHER modulus mismatches (mac_err7 == 0 when gated off)
     assign mac_err = mac_err3 | mac_err7;
+    end else begin : g_no_check
+        assign mac_err = 1'b0;   // reliability stripped -> plain MAC (PPA baseline)
+    end endgenerate
 endmodule
 
 `default_nettype wire

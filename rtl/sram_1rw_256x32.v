@@ -29,7 +29,8 @@ module sram_1rw_256x32 #(
     parameter ADDR_W  = 8,
     parameter DATA_W  = 32,
     parameter DEPTH   = 256,
-    parameter INIT_VAL = 32'h0
+    parameter INIT_VAL = 32'h0,
+    parameter GEN_CHECK = 1            // 1 = residue tag store present; 0 = data-only (PPA baseline)
 )(
     input  wire              clk,
     // ---- Port A: read/write ----
@@ -114,6 +115,7 @@ module sram_1rw_256x32 #(
     // A stored-word corruption is then caught in-cycle when the word is consumed as
     // a MAC operand: the PE predicts from this trusted tag while the multiplier sees
     // the corrupted value -> residue mismatch (mac_err).
+    generate if (GEN_CHECK) begin : g_tag
     reg [1:0] tagmem [0:DEPTH-1];
     reg [1:0] rtag_r, rtag2_r;
     integer ti;
@@ -131,6 +133,10 @@ module sram_1rw_256x32 #(
         rtag2_r <= tagmem[raddr2];
     assign rtag  = rtag_r;
     assign rtag2 = rtag2_r;
+    end else begin : g_notag               // data-only: no tag storage (baseline)
+        assign rtag  = 2'd0;
+        assign rtag2 = 2'd0;
+    end endgenerate
 
 endmodule
 

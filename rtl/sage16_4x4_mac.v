@@ -32,6 +32,7 @@ module sage16_4x4_mac #(
     parameter ACC_W    = 32,
     parameter CFG_W    = 10,
     parameter PIPELINE = 1,
+    parameter GEN_CHECK = 1,           // 1 = reliability in silicon; 0 = plain fabric (PPA baseline)
     parameter RESIDUE_MOD7 = 0,        // threaded to every PE (0 = mod-3 only)
     parameter SRAM_AW  = 8,            // 256 words
     parameter SRAM_DW  = 32
@@ -86,6 +87,9 @@ module sage16_4x4_mac #(
     genvar gr, gc;
     generate
         for (gr = 0; gr < ROWS; gr = gr+1) begin : wres
+            // residue of the driver value (combinational; pruned by synthesis
+            // when GEN_CHECK=0 leaves it unused — kept ungated so the reducer's
+            // output net connects cleanly across generate scopes).
             mod3_reduce #(.W(DATA_W)) u_m3
                 (.x(ext_in_west[gr*DATA_W +: DATA_W]), .r(res_w_src[gr]));
             assign west_rail[gr] = ext_in_west[gr*DATA_W +: DATA_W];
@@ -135,18 +139,26 @@ module sage16_4x4_mac #(
             // Registered so the mod-3-then-compare is reg-to-reg (off the
             // per-cycle critical path); flags land one cycle later, absorbed by
             // the sticky syndrome — same treatment as the PE residue check.
+            // rail-tap residues feed the PE (carried operand residue); ungated so
+            // their nets connect cleanly, pruned by synthesis when GEN_CHECK=0.
             wire [1:0] res_w_tap, res_n_tap;
             mod3_reduce #(.W(DATA_W)) u_m3_wtap (.x(west_rail[r]),  .r(res_w_tap));
             mod3_reduce #(.W(DATA_W)) u_m3_ntap (.x(north_rail[c]), .r(res_n_tap));
-            reg rerr_w_q, rerr_n_q;
-            always @(posedge clk or negedge rst_n)
-                if (!rst_n) begin rerr_w_q <= 1'b0; rerr_n_q <= 1'b0; end
-                else begin
-                    rerr_w_q <= (res_w_tap != res_w_src[r]);
-                    rerr_n_q <= (res_n_tap != res_n_src[c]);
-                end
-            assign rail_err_w_flat[IDX] = rerr_w_q;
-            assign rail_err_n_flat[IDX] = rerr_n_q;
+            // only the syndrome FFs + flag outputs are gated (the reliability cost)
+            if (GEN_CHECK) begin : g_railchk
+                reg rerr_w_q, rerr_n_q;
+                always @(posedge clk or negedge rst_n)
+                    if (!rst_n) begin rerr_w_q <= 1'b0; rerr_n_q <= 1'b0; end
+                    else begin
+                        rerr_w_q <= (res_w_tap != res_w_src[r]);
+                        rerr_n_q <= (res_n_tap != res_n_src[c]);
+                    end
+                assign rail_err_w_flat[IDX] = rerr_w_q;
+                assign rail_err_n_flat[IDX] = rerr_n_q;
+            end else begin : g_norailchk
+                assign rail_err_w_flat[IDX] = 1'b0;
+                assign rail_err_n_flat[IDX] = 1'b0;
+            end
 
             // ---- SRAM write-data mux: PE accumulator OR external value ----
             wire [SRAM_DW-1:0] sram_wdata_pe  = pe_out_acc[IDX];
@@ -154,12 +166,14 @@ module sage16_4x4_mac #(
             wire [SRAM_DW-1:0] sram_wdata     =
                 sram_wdata_sel[IDX] ? sram_wdata_ext : sram_wdata_pe;
 
-            // residue tag for the written word (mod-3), carried with the data
+            // residue tag for the written word (mod-3), carried with the data.
+            // Ungated; the SRAM's own GEN_CHECK drops the tag store, so this
+            // reducer is pruned when GEN_CHECK=0 (its output goes unused).
             wire [1:0] sram_wtag;
             mod3_reduce #(.W(SRAM_DW)) u_m3_wtag (.x(sram_wdata), .r(sram_wtag));
 
             // ---- paired SRAM ----
-            sram_1rw_256x32 u_mem (
+            sram_1rw_256x32 #(.GEN_CHECK(GEN_CHECK)) u_mem (
                 .clk   (clk),
                 // port A: read/write (BIST, write-back, verify)
                 .cs_n  (sram_cs_n_flat[IDX]),
@@ -184,6 +198,7 @@ module sage16_4x4_mac #(
                 .ACC_W       (ACC_W),
                 .CFG_W       (CFG_W),
                 .PIPELINE    (PIPELINE),
+                .GEN_CHECK   (GEN_CHECK),
                 .RESIDUE_MOD7(RESIDUE_MOD7)
             ) u_pe (
                 .clk        (clk),
