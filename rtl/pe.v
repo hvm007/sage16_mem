@@ -51,6 +51,7 @@ module pe #(
     // --- outputs ---
     output wire [DATA_W-1:0]     out_mesh,
     output reg  [ACC_W-1:0]      out,
+    output wire [1:0]            res_q,      // registered mod-3 of the result (SRAM write-tag carry)
     // --- runtime self-check: residue (mod-3) verification of the MAC ---
     // Fires the cycle after a corrupted accumulate. Independent re-derivation
     // from the OPERANDS, so it covers multiplier, adder and accumulator faults.
@@ -304,8 +305,10 @@ module pe #(
 
     // combine: flag if EITHER modulus mismatches (mac_err7 == 0 when gated off)
     assign mac_err = mac_err3 | mac_err7;
+    assign res_q   = res_out_q;   // carried to the SRAM write-tag (keeps mod3 off the critical path)
     end else begin : g_no_check
         assign mac_err = 1'b0;   // reliability stripped -> plain MAC (PPA baseline)
+        assign res_q   = 2'd0;
     end endgenerate
 endmodule
 

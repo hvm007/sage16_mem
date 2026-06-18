@@ -166,11 +166,16 @@ module sage16_4x4_mac #(
             wire [SRAM_DW-1:0] sram_wdata     =
                 sram_wdata_sel[IDX] ? sram_wdata_ext : sram_wdata_pe;
 
-            // residue tag for the written word (mod-3), carried with the data.
-            // Ungated; the SRAM's own GEN_CHECK drops the tag store, so this
-            // reducer is pruned when GEN_CHECK=0 (its output goes unused).
-            wire [1:0] sram_wtag;
-            mod3_reduce #(.W(SRAM_DW)) u_m3_wtag (.x(sram_wdata), .r(sram_wtag));
+            // Write tag (mod-3 of the stored word). For PE-accumulator writes we
+            // CARRY the PE's already-registered residue (pe_res_q) instead of
+            // recomputing mod-3(32b) in the write cycle — that recompute was the
+            // Fmax-critical path (out_reg -> 11-LUT mod3 -> tag RAM). Only the
+            // external (load/BIST) write recomputes mod-3, and that load path is
+            // constrained multicycle (it is not part of the compute loop).
+            wire [1:0] pe_res_q;
+            wire [1:0] sram_wtag_ext;
+            mod3_reduce #(.W(SRAM_DW)) u_m3_wtag (.x(sram_wdata_ext), .r(sram_wtag_ext));
+            wire [1:0] sram_wtag = sram_wdata_sel[IDX] ? sram_wtag_ext : pe_res_q;
 
             // ---- paired SRAM ----
             sram_1rw_256x32 #(.GEN_CHECK(GEN_CHECK)) u_mem (
@@ -222,6 +227,7 @@ module sage16_4x4_mac #(
                 .sram_res   (sram_rtag2_w[IDX]),    // SRAM-word residue (stored tag)
                 .out_mesh   (pe_out_mesh[IDX]),
                 .out        (pe_out_acc [IDX]),
+                .res_q      (pe_res_q),
                 .mac_err    (mac_err_flat[IDX])
             );
 

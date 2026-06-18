@@ -88,6 +88,14 @@ module tb_sram_residue;
         end
     endtask
 
+    // write PE0's accumulator to SRAM[a]; tag is the CARRIED pe_res_q (no mod3 recompute)
+    task pe_write; input [7:0] a; begin
+        @(negedge clk);
+        sram_cs_n[0]=0; sram_we_n[0]=0; sram_addr[0 +: SRAM_AW]=a; sram_wdata_sel[0]=0;
+        @(negedge clk);
+        sram_cs_n[0]=1; sram_we_n[0]=1; sram_wdata_sel=0;
+    end endtask
+
     initial begin
         rst_n=0; repeat(3) @(negedge clk); rst_n=1; @(negedge clk);
         config_macb;
@@ -122,6 +130,27 @@ module tb_sram_residue;
             pass=pass+1;
         end else begin
             $display("  FAULT : mac_err=%0b (exp 1) -> FAIL (escaped!)", st_err);
+            fail=fail+1;
+        end
+
+        // ---- Phase 3: PE-accumulator write carries pe_res_q as the tag ----
+        $display("  --- PE-write tag carry (no mod3 recompute on the write path) ---");
+        pe_write(8'd2);                       // store PE0.out to SRAM[2] with carried tag
+        clr_acc; do_sram_mac(8'd2, 16'd1);    // read it back as operand A
+        if (st_err===1'b0) begin
+            $display("  PE-WRITE clean : mac_err=0 -> OK (carried tag matches stored data)");
+            pass=pass+1;
+        end else begin
+            $display("  PE-WRITE clean : mac_err=%0b -> FAIL (carried tag wrong/misaligned)", st_err);
+            fail=fail+1;
+        end
+        dut.rg[0].cg[0].u_mem.mem[2] = dut.rg[0].cg[0].u_mem.mem[2] + 32'd1;  // +1 flips mod3
+        clr_acc; do_sram_mac(8'd2, 16'd1);
+        if (st_err===1'b1) begin
+            $display("  PE-WRITE fault : mac_err=1 -> OK (carried-tag mismatch caught)");
+            pass=pass+1;
+        end else begin
+            $display("  PE-WRITE fault : mac_err=%0b -> FAIL (escaped)", st_err);
             fail=fail+1;
         end
 
