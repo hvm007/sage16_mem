@@ -21,3 +21,6 @@ reports/
 .Xil/
 __pycache__/
 *.pyc
+
+# local integration guide for partner — do NOT publish
+integration.md
