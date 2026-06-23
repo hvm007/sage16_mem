@@ -218,8 +218,8 @@ module pe #(
     wire [ACC_W:0] acc_sum33 = {1'b0, mul_prod_unsigned} + {1'b0, in_self};
     wire [3:0] res_pred_raw  = {2'b00, res_prod_eff} + {2'b00, res_out}
                              + (acc_sum33[ACC_W] ? 4'd2 : 4'd0);   // -1 == +2 mod 3
-    mod3_reduce #(.W(4)) u_m3_pred (.x(res_pred_raw), .r(res_pred_d_w));
     wire [1:0] res_pred_d_w;
+    mod3_reduce #(.W(4)) u_m3_pred (.x(res_pred_raw), .r(res_pred_d_w));
 
     reg  [1:0] res_pred_q;
     reg        chk_vld_q;
